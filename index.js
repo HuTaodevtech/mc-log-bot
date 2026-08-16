@@ -64,10 +64,21 @@ function parseMinecraftMessage(content) {
     return { type: "leave", player: player || rest.split(" ")[0], message: null };
   }
 
+  // ADVANCEMENT / CHALLENGE / GOAL
+  if (/has made the advancement|has completed the challenge|has reached the goal/i.test(rest)) {
+    const cleanMsg = rest.replace(/\n/g, " ").replace(/\*/g, "").trim();
+    return { type: "advancement", player, message: cleanMsg };
+  }
+
   // DEATH (kata kunci umum pesan kematian Minecraft)
-  const deathKeywords = /died|slain|drowned|blew up|fell|burned|starved|shot|kinetic energy|suffocated|withered|froze|blast|lava|arrow|explosion/i;
-  if (emojiName === "death" || (player && deathKeywords.test(rest))) {
-    return { type: "death", player, message: rest };
+  const deathKeywords = /died|slain|drowned|blew up|fell|burned|starved|shot|kinetic energy|suffocated|withered|froze|blast|lava|arrow|explosion|squashed|cactus|flames/i;
+  if (emojiName === "death" || deathKeywords.test(rest)) {
+    let deathPlayer = player;
+    if (!deathPlayer) {
+      const nameGuess = rest.match(/^([A-Za-z0-9_.]{2,20})\b/);
+      deathPlayer = nameGuess ? nameGuess[1] : null;
+    }
+    return { type: "death", player: deathPlayer, message: rest };
   }
 
   // CHAT — kalau ada nama bold + sisa teks, anggap itu chat biasa
