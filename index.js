@@ -36,7 +36,7 @@ function pushLog(entry) {
 //   "PlayerName left the game"
 // Kalau format aslinya beda, sesuaikan regex di bawah ini.
 // ------------------------------------------------------------
-function parseMinecraftMessage(content) {
+function parseMinecraftMessage(content, authorName) {
   if (!content) return null;
   let text = content.trim();
 
@@ -92,6 +92,12 @@ function parseMinecraftMessage(content) {
     return { type: "chat", player: fallbackMatch[1], message: fallbackMatch[2] };
   }
 
+  // Chat polos: pesan dari webhook player tanpa format khusus (misal "naik dung")
+  // Nama webhook = nama player Minecraft-nya, jadi pakai itu sebagai player.
+  if (authorName && text) {
+    return { type: "chat", player: authorName, message: text };
+  }
+
   return null; // pesan nggak dikenali, diabaikan
 }
 
@@ -120,12 +126,13 @@ client.on("messageCreate", (message) => {
 
   if (message.webhookId) {
     // Pesan dari webhook "MC Linker Chat" → event dari Minecraft (join/leave/death/dst)
+    // ATAU chat polos dari player (nama webhook = nama player-nya)
     let content = message.content;
     if (!content && message.embeds?.length > 0) {
       const embed = message.embeds[0];
       content = embed.description || embed.title || "";
     }
-    parsed = parseMinecraftMessage(content);
+    parsed = parseMinecraftMessage(content, message.author.username);
   } else if (!message.author.bot) {
     // Pesan biasa yang diketik langsung oleh member di Discord (diteruskan ke Minecraft)
     const displayName = message.member?.displayName || message.author.username;
