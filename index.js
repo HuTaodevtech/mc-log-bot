@@ -38,23 +38,47 @@ function pushLog(entry) {
 // ------------------------------------------------------------
 function parseMinecraftMessage(content) {
   if (!content) return null;
+  let text = content.trim();
 
-  // Format chat: <Nama> isi pesan
-  const chatMatch = content.match(/^<([^>]+)>\s*(.+)$/);
-  if (chatMatch) {
-    return { type: "chat", player: chatMatch[1], message: chatMatch[2] };
+  // MC Linker sering mulai pesan dengan custom emoji Discord, contoh: <:join:123456789>
+  // Kita ambil nama emoji-nya (join/leave/death/dst) lalu buang dari teks.
+  const emojiMatch = text.match(/^<a?:([^:>]+):(\d+)>\s*/);
+  let emojiName = null;
+  if (emojiMatch) {
+    emojiName = emojiMatch[1].toLowerCase();
+    text = text.slice(emojiMatch[0].length).trim();
   }
 
-  // Format join
-  const joinMatch = content.match(/^(\S+)\s+joined the game$/i);
-  if (joinMatch) {
-    return { type: "join", player: joinMatch[1], message: null };
+  // Ambil nama player yang biasanya di-bold: **NamaPlayer**
+  const boldMatch = text.match(/\*\*([^*]+)\*\*/);
+  const player = boldMatch ? boldMatch[1] : null;
+  const rest = boldMatch ? text.replace(boldMatch[0], "").trim() : text;
+
+  // JOIN
+  if (emojiName === "join" || /joined the game/i.test(rest)) {
+    return { type: "join", player: player || rest.split(" ")[0], message: null };
   }
 
-  // Format leave
-  const leaveMatch = content.match(/^(\S+)\s+left the game$/i);
-  if (leaveMatch) {
-    return { type: "leave", player: leaveMatch[1], message: null };
+  // LEAVE
+  if (emojiName === "leave" || /left the game/i.test(rest)) {
+    return { type: "leave", player: player || rest.split(" ")[0], message: null };
+  }
+
+  // DEATH (kata kunci umum pesan kematian Minecraft)
+  const deathKeywords = /died|slain|drowned|blew up|fell|burned|starved|shot|kinetic energy|suffocated|withered|froze|blast|lava|arrow|explosion/i;
+  if (emojiName === "death" || (player && deathKeywords.test(rest))) {
+    return { type: "death", player, message: rest };
+  }
+
+  // CHAT — kalau ada nama bold + sisa teks, anggap itu chat biasa
+  if (player && rest) {
+    return { type: "chat", player, message: rest };
+  }
+
+  // Fallback terakhir: coba tangkap "Nama > pesan" atau "Nama: pesan"
+  const fallbackMatch = text.match(/([A-Za-z0-9_.]{3,16})\s*[:>]\s*(.+)$/);
+  if (fallbackMatch) {
+    return { type: "chat", player: fallbackMatch[1], message: fallbackMatch[2] };
   }
 
   return null; // pesan nggak dikenali, diabaikan
