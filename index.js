@@ -116,14 +116,28 @@ client.on("messageCreate", (message) => {
   // hanya proses pesan dari channel yang ditentukan
   if (message.channel.id !== CHANNEL_ID) return;
 
-  // Ambil isi pesan. Kalau MC Linker kirim lewat embed, cek embed juga.
-  let content = message.content;
-  if (!content && message.embeds?.length > 0) {
-    const embed = message.embeds[0];
-    content = embed.description || embed.title || "";
+  let parsed;
+
+  if (message.webhookId) {
+    // Pesan dari webhook "MC Linker Chat" → event dari Minecraft (join/leave/death/dst)
+    let content = message.content;
+    if (!content && message.embeds?.length > 0) {
+      const embed = message.embeds[0];
+      content = embed.description || embed.title || "";
+    }
+    parsed = parseMinecraftMessage(content);
+  } else if (!message.author.bot) {
+    // Pesan biasa yang diketik langsung oleh member di Discord (diteruskan ke Minecraft)
+    const displayName = message.member?.displayName || message.author.username;
+    const text = message.content?.trim();
+    if (text) {
+      parsed = { type: "chat", player: displayName, message: text };
+    }
+  } else {
+    // Pesan dari bot lain (bukan MC Linker Chat) → abaikan
+    return;
   }
 
-  const parsed = parseMinecraftMessage(content);
   if (!parsed) return;
 
   console.log(`📩 [${parsed.type}] ${parsed.player}${parsed.message ? ": " + parsed.message : ""}`);
