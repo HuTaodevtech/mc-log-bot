@@ -1,6 +1,7 @@
 // ============================================================
-// MC Log Bot — baca pesan log Minecraft (via webhook MC Linker)
-// dari 1 channel Discord, simpan di memori, sediain API buat website.
+// MC Log Bot — baca log Minecraft (via DiscordSRV) dari 1 atau
+// banyak channel Discord (boleh beda server), simpan di memori,
+// sediain API buat website.
 // ============================================================
 
 require("dotenv").config();
@@ -9,12 +10,19 @@ const express = require("express");
 const cors = require("cors");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL_ID;
 const PORT = process.env.PORT || 3000;
-const MAX_LOGS = 200; // simpan 200 log terakhir aja biar ringan
+const MAX_LOGS = 200; // jumlah log terakhir yang disimpan
 
-if (!BOT_TOKEN || !CHANNEL_ID) {
-  console.error("❌ BOT_TOKEN atau CHANNEL_ID belum di-set di environment variable!");
+// Bisa 1 atau banyak channel, pisahkan dengan koma.
+// Contoh: CHANNEL_IDS=111111111111111111,222222222222222222
+// (CHANNEL_ID lama tetap didukung)
+const CHANNEL_IDS = (process.env.CHANNEL_IDS || process.env.CHANNEL_ID || "")
+  .split(",")
+  .map((id) => id.trim())
+  .filter(Boolean);
+
+if (!BOT_TOKEN || CHANNEL_IDS.length === 0) {
+  console.error("❌ BOT_TOKEN atau CHANNEL_IDS belum di-set di environment variable!");
   process.exit(1);
 }
 
@@ -29,76 +37,38 @@ function pushLog(entry) {
 }
 
 // ------------------------------------------------------------
-// Parsing pesan dari webhook "MC Linker Chat"
-// MC Linker biasanya kirim salah satu format berikut lewat webhook:
-//   "<PlayerName> pesan chat"
-//   "PlayerName joined the game"
-//   "PlayerName left the game"
-// Kalau format aslinya beda, sesuaikan regex di bawah ini.
+// Parsing pesan DiscordSRV
 // ------------------------------------------------------------
-function parseMinecraftMessage(content, authorName) {
-  if (!content) return null;
-  let text = content.trim();
 
-  // MC Linker sering mulai pesan dengan custom emoji Discord, contoh: <:join:123456789>
-  // Kita ambil nama emoji-nya (join/leave/death/dst) lalu buang dari teks.
-  const emojiMatch = text.match(/^<a?:([^:>]+):(\d+)>\s*/);
-  let emojiName = null;
-  if (emojiMatch) {
-    emojiName = emojiMatch[1].toLowerCase();
-    text = text.slice(emojiMatch[0].length).trim();
+// Buang prefix "Guest " dari nama (hapus .replace kalau mau tetap ada)
+function cleanName(name) {
+  return (name || "").replace(/^Guest\s+/i, "").trim();
+}
+
+// Parsing teks event dari embed DiscordSRV (join/leave/death/advancement)
+function parseEventText(raw) {
+  const text = (raw || "").replace(/\*/g, "").trim();
+  if (!text) return null;
+  let m;
+
+  if ((m = text.match(/^(.+?) joined the server$/i))) {
+    return { type: "join", player: cleanName(m[1]), message: null };
+  }
+  if ((m = text.match(/^(.+?) left the server$/i))) {
+    return { type: "leave", player: cleanName(m[1]), message: null };
+  }
+  if ((m = text.match(/^(.+?) has (?:made the advancement|completed the challenge|reached the goal)/i))) {
+    return { type: "advancement", player: cleanName(m[1]), message: text };
   }
 
-  // Ambil nama player yang biasanya di-bold: **NamaPlayer**
-  const boldMatch = text.match(/\*\*([^*]+)\*\*/);
-  const player = boldMatch ? boldMatch[1] : null;
-  const rest = boldMatch ? text.replace(boldMatch[0], "").trim() : text;
-
-  // JOIN
-  if (emojiName === "join" || /joined the game/i.test(rest)) {
-    return { type: "join", player: player || rest.split(" ")[0], message: null };
+  const deathKeywords =
+    /died|was |slain|drowned|blew up|fell|burned|starved|shot|suffocated|withered|froze|blast|lava|explosion|squashed|cactus|flames|hit the ground|walked into|tried to swim/i;
+  if (deathKeywords.test(text)) {
+    const first = text.match(/^(\S+)/);
+    return { type: "death", player: cleanName(first ? first[1] : null), message: text };
   }
 
-  // LEAVE
-  if (emojiName === "leave" || /left the game/i.test(rest)) {
-    return { type: "leave", player: player || rest.split(" ")[0], message: null };
-  }
-
-  // ADVANCEMENT / CHALLENGE / GOAL
-  if (/has made the advancement|has completed the challenge|has reached the goal/i.test(rest)) {
-    const cleanMsg = rest.replace(/\n/g, " ").replace(/\*/g, "").trim();
-    return { type: "advancement", player, message: cleanMsg };
-  }
-
-  // DEATH (kata kunci umum pesan kematian Minecraft)
-  const deathKeywords = /died|slain|drowned|blew up|fell|burned|starved|shot|kinetic energy|suffocated|withered|froze|blast|lava|arrow|explosion|squashed|cactus|flames/i;
-  if (emojiName === "death" || deathKeywords.test(rest)) {
-    let deathPlayer = player;
-    if (!deathPlayer) {
-      const nameGuess = rest.match(/^([A-Za-z0-9_.]{2,20})\b/);
-      deathPlayer = nameGuess ? nameGuess[1] : null;
-    }
-    return { type: "death", player: deathPlayer, message: rest };
-  }
-
-  // CHAT — kalau ada nama bold + sisa teks, anggap itu chat biasa
-  if (player && rest) {
-    return { type: "chat", player, message: rest };
-  }
-
-  // Fallback terakhir: coba tangkap "Nama > pesan" atau "Nama: pesan"
-  const fallbackMatch = text.match(/([A-Za-z0-9_.]{3,16})\s*[:>]\s*(.+)$/);
-  if (fallbackMatch) {
-    return { type: "chat", player: fallbackMatch[1], message: fallbackMatch[2] };
-  }
-
-  // Chat polos: pesan dari webhook player tanpa format khusus (misal "naik dung")
-  // Nama webhook = nama player Minecraft-nya, jadi pakai itu sebagai player.
-  if (authorName && text) {
-    return { type: "chat", player: authorName, message: text };
-  }
-
-  return null; // pesan nggak dikenali, diabaikan
+  return null; // event lain (server start/stop, dll) diabaikan
 }
 
 // ------------------------------------------------------------
@@ -115,40 +85,51 @@ const client = new Client({
 
 client.once("ready", () => {
   console.log(`✅ Bot online sebagai ${client.user.tag}`);
-  console.log(`👀 Mendengarkan channel ID: ${CHANNEL_ID}`);
+  console.log(`👀 Mendengarkan ${CHANNEL_IDS.length} channel: ${CHANNEL_IDS.join(", ")}`);
 });
 
 client.on("messageCreate", (message) => {
-  // hanya proses pesan dari channel yang ditentukan
-  if (message.channel.id !== CHANNEL_ID) return;
+  if (!CHANNEL_IDS.includes(message.channel.id)) return;
+  if (message.author.id === client.user.id) return; // abaikan bot sendiri
 
-  let parsed;
+  let parsed = null;
+  const embed = message.embeds?.[0];
 
-  if (message.webhookId) {
-    // Pesan dari webhook "MC Linker Chat" → event dari Minecraft (join/leave/death/dst)
-    // ATAU chat polos dari player (nama webhook = nama player-nya)
-    let content = message.content;
-    if (!content && message.embeds?.length > 0) {
-      const embed = message.embeds[0];
-      content = embed.description || embed.title || "";
-    }
-    parsed = parseMinecraftMessage(content, message.author.username);
-  } else if (!message.author.bot) {
-    // Pesan biasa yang diketik langsung oleh member di Discord (diteruskan ke Minecraft)
-    const displayName = message.member?.displayName || message.author.username;
+  if (embed) {
+    // DiscordSRV: join/leave/death/advancement berupa embed
+    const text = embed.author?.name || embed.title || embed.description || "";
+    parsed = parseEventText(text);
+  } else if (message.webhookId) {
+    // Chat dari Minecraft lewat webhook, username = nama player
     const text = message.content?.trim();
     if (text) {
-      parsed = { type: "chat", player: displayName, message: text };
+      parsed = { type: "chat", player: cleanName(message.author.username), message: text };
     }
-  } else {
-    // Pesan dari bot lain (bukan MC Linker Chat) → abaikan
-    return;
+  } else if (!message.author.bot) {
+    // Member Discord yang ngetik langsung (diteruskan ke Minecraft)
+    const text = message.content?.trim();
+    if (text) {
+      parsed = {
+        type: "chat",
+        player: message.member?.displayName || message.author.username,
+        message: text,
+      };
+    }
   }
 
   if (!parsed) return;
 
-  console.log(`📩 [${parsed.type}] ${parsed.player}${parsed.message ? ": " + parsed.message : ""}`);
-  pushLog(parsed);
+  const entry = {
+    ...parsed,
+    guildId: message.guild?.id || null,
+    guildName: message.guild?.name || null,
+    channelId: message.channel.id,
+  };
+
+  console.log(
+    `📩 [${entry.guildName}] [${entry.type}] ${entry.player}${entry.message ? ": " + entry.message : ""}`
+  );
+  pushLog(entry);
 });
 
 client.login(BOT_TOKEN).catch((err) => {
@@ -162,8 +143,14 @@ client.login(BOT_TOKEN).catch((err) => {
 const app = express();
 app.use(cors());
 
+// Semua log:            /api/logs
+// Filter per server:    /api/logs?guild=GUILD_ID
+// Filter per channel:   /api/logs?channel=CHANNEL_ID
 app.get("/api/logs", (req, res) => {
-  res.json({ ok: true, count: logs.length, logs: [...logs].reverse() });
+  let result = [...logs].reverse();
+  if (req.query.guild) result = result.filter((l) => l.guildId === req.query.guild);
+  if (req.query.channel) result = result.filter((l) => l.channelId === req.query.channel);
+  res.json({ ok: true, count: result.length, logs: result });
 });
 
 app.get("/", (req, res) => {
